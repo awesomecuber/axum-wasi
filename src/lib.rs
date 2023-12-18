@@ -9,13 +9,13 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{Request, Uri},
-    response::{Html, Response},
+    http::{HeaderMap, Request, StatusCode, Uri},
+    response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
 use exports::wasi::http::incoming_handler::Guest;
-use futures::{sink, stream, Future, Sink, Stream, StreamExt};
+use futures::{sink, stream, Future, Sink, SinkExt, Stream};
 use tower::Service;
 use wasi::{
     http::types::{
@@ -91,25 +91,46 @@ impl Guest for Handler {
         }
         let request = request_builder.body(body).unwrap();
 
-        let (_parts, body) = block_on(app(request)).into_parts();
+        let (parts, body) = block_on(app(request)).into_parts();
 
-        let _body = body.into_data_stream().collect::<Vec<_>>();
-
-        let response_headers = Fields::from_list(&[]).unwrap();
+        let response_headers = Fields::new();
+        for k in parts.headers.keys() {
+            let vals = parts
+                .headers
+                .get_all(k)
+                .into_iter()
+                .map(|v| v.as_bytes().to_owned())
+                .collect::<Vec<_>>();
+            response_headers.set(&k.to_string(), &vals).unwrap();
+        }
         let outgoing_response = OutgoingResponse::new(response_headers);
-        let _outgoing_body = outgoing_response.body().unwrap();
+        outgoing_response
+            .set_status_code(parts.status.as_u16())
+            .unwrap();
 
-        ResponseOutparam::set(response_out, Ok(OutgoingResponse::new(Fields::new())))
+        let outgoing_body = outgoing_response.body().unwrap();
+        let sink = outgoing_body_to_sink(outgoing_body);
+
+        ResponseOutparam::set(response_out, Ok(outgoing_response))
     }
 }
 
 async fn app(request: Request<Body>) -> Response {
-    let mut router = Router::new().route("/api/", get(index));
+    let mut router = Router::new().route("/", get(index));
     router.call(request).await.unwrap()
 }
 
-async fn index() -> Html<&'static str> {
-    Html("<h1>Hello, world!</h1>")
+async fn index(headers: HeaderMap) -> impl IntoResponse {
+    [(
+        "abc",
+        headers
+            .get("abc")
+            .ok_or("expected header abc to be set")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    )]
 }
 
 static WAKERS: Mutex<Vec<(io::poll::Pollable, Waker)>> = Mutex::new(Vec::new());
@@ -165,7 +186,7 @@ const READ_SIZE: u64 = 16 * 1024;
 pub fn incoming_body_to_stream(
     body: IncomingBody,
 ) -> impl Stream<Item = Result<Vec<u8>, io::streams::Error>> {
-    // TODO: No trailer support!
+    // TODO: No trailer support! Would probably require implementing http::Body myself
     let to_capture = (body.stream().unwrap(), body);
 
     stream::poll_fn(move |context| {
@@ -193,7 +214,7 @@ impl Display for wasi::io::error::Error {
 
 impl std::error::Error for wasi::io::error::Error {}
 
-fn _outgoing_body_to_sink(body: OutgoingBody) -> impl Sink<Vec<u8>, Error = io::streams::Error> {
+fn outgoing_body_to_sink(body: OutgoingBody) -> impl Sink<Vec<u8>, Error = io::streams::Error> {
     struct Outgoing(Option<(OutputStream, OutgoingBody)>);
 
     impl Drop for Outgoing {
