@@ -9,5 +9,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-# axum = { version = "0.7.2", default-features = false }
+axum = { version = "0.7.2", default-features = false }
+futures = "0.3.29"
+tower = "0.4.13"
 wit-bindgen = { git = "https://github.com/bytecodealliance/wit-bindgen", version = "0.16.0" }
